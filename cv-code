@@ -1,0 +1,116 @@
+import cv2
+import numpy as np
+import matplotlib.pyplot as plt
+import os
+
+def hist_equal_manual(img_gray):
+    """手动实现全局直方图均衡化（不调用cv2.equalizeHist）"""
+    hist, bins = np.histogram(img_gray.flatten(), 256, [0, 256])
+    cdf = hist.cumsum()
+    cdf_masked = np.ma.masked_equal(cdf, 0)
+    cdf_scaled = (cdf_masked - cdf_masked.min()) * 255 / (cdf_masked.max() - cdf_masked.min())
+    cdf_final = np.ma.filled(cdf_scaled, 0).astype(np.uint8)
+    return cdf_final[img_gray]
+
+def sharpen_manual(img_gray):
+    """手动实现拉普拉斯锐化（满足作业要求的“一种锐化方法”）"""
+    kernel = np.array([[0, -1, 0], [-1, 5, -1], [0, -1, 0]], dtype=np.float32)
+    return cv2.filter2D(img_gray, -1, kernel)
+
+
+def generate_imgs(original_path, save_dir):
+    """输入1张原图，自动生成3种作业要求的图片"""
+    img = cv2.imread(original_path)
+    if img is None:
+        print("❌ 请确保 images 文件夹下有 original.jpg")
+        return
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    
+    # 1. 低对比度图
+    low_con = cv2.convertScaleAbs(gray, alpha=0.4, beta=-10)
+    cv2.imwrite(f"{save_dir}/low_contrast.jpg", low_con)
+    
+    # 2. 含噪声图
+    noisy = gray.copy()
+    # 加白噪点
+    coords = [np.random.randint(0, i-1, int(np.ceil(0.03*gray.shape[0]*gray.shape[1]))) for i in gray.shape[:2]]
+    noisy[coords[0], coords[1]] = 255
+    # 加黑噪点
+    coords = [np.random.randint(0, i-1, int(np.ceil(0.03*gray.shape[0]*gray.shape[1]))) for i in gray.shape[:2]]
+    noisy[coords[0], coords[1]] = 0
+    cv2.imwrite(f"{save_dir}/noisy.jpg", noisy)
+    
+    # 3. 模糊图
+    blur = cv2.GaussianBlur(gray, (15, 15), 0)
+    cv2.imwrite(f"{save_dir}/blur.jpg", blur)
+    
+    print("✅ 已生成：low_contrast.jpg, noisy.jpg, blur.jpg")
+    return gray
+
+
+def calc_psnr(img1, img2):
+    """PSNR峰值信噪比（越高，保真度越好）"""
+    mse = np.mean((img1 - img2)**2)
+    if mse == 0: return 100
+    return 10 * np.log10((255.0**2)/mse)
+
+def calc_contrast(img):
+    """对比度（标准差，越高，细节越清晰）"""
+    return np.std(img)
+
+def process_img(img_name, original_gray):
+    path = f"images/{img_name}"
+    img = cv2.imread(path, 0)
+    if img is None: return
+
+    he = hist_equal_manual(img)                     # 1.全局均衡（手动）
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8)).apply(img) # 2.CLAHE
+    mean = cv2.blur(img, (5,5))                     # 3.均值滤波
+    gauss = cv2.GaussianBlur(img, (5,5), 0)         # 4.高斯滤波
+    median = cv2.medianBlur(img, 5)                 # 5.中值滤波
+    sharp = sharpen_manual(img)                      # 6.锐化（手动）
+    comb1 = hist_equal_manual(gauss)                # 7.滤波→均衡
+    comb2 = cv2.GaussianBlur(he, (3,3), 0)           # 8.均衡→滤波
+
+    # -------- 计算指标 --------
+    metrics = {
+        "PSNR": [calc_psnr(original_gray, i) for i in [img, he, clahe, mean, gauss, median, sharp, comb1, comb2]],
+        "Contrast": [calc_contrast(i) for i in [img, he, clahe, mean, gauss, median, sharp, comb1, comb2]]
+    }
+    labels = ["原图", "全局均衡", "CLAHE", "均值滤波", "高斯滤波", "中值滤波", "锐化", "滤波→均衡", "均衡→滤波"]
+
+    plt.figure(figsize=(20, 12))
+    for i, (name, data) in enumerate(zip(labels, [img, he, clahe, mean, gauss, median, sharp, comb1, comb2])):
+        plt.subplot(3, 3, i+1)
+        plt.imshow(data, cmap='gray')
+        plt.title(f"{name}\nPSNR:{metrics['PSNR'][i]:.1f}dB, 对比度:{metrics['Contrast'][i]:.1f}")
+        plt.axis('off')
+    
+    plt.tight_layout()
+    plt.savefig(f"results/{img_name.split('.')[0]}_all.png", dpi=300)
+    plt.close()
+
+    plt.figure(figsize=(15, 5))
+    for i, name in enumerate(labels):
+        plt.subplot(1,3, i+1)
+        plt.hist([img, he, clahe][i], 256, [0,256], color='gray')
+        plt.title(f"{name} 直方图")
+    plt.tight_layout()
+    plt.savefig(f"results/{img_name.split('.')[0]}_hist.png", dpi=300)
+    plt.close()
+
+    print(f"✅ {img_name} 处理完成！结果保存在 results")
+
+if __name__ == "__main__":
+    os.makedirs("images", exist_ok=True)
+    os.makedirs("results", exist_ok=True)
+    
+    # 1. 放入 original.jpg 后运行生成测试图
+    original_gray = generate_imgs("images/original.jpg", "images")
+    
+    # 2. 处理3种状态的图
+    process_img("low_contrast.jpg", original_gray)
+    process_img("noisy.jpg", original_gray)
+    process_img("blur.jpg", original_gray)
+    
+    print("\n🎉 全部完成！结果在 results 文件夹")
